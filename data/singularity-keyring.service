@@ -1,0 +1,14 @@
+[Unit]
+Description=Singularity Keyring (Secret Service)
+Documentation=https://specifications.freedesktop.org/secret-service/
+PartOf=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=org.freedesktop.secrets
+ExecStart=%h/.local/singularity/bin/singularity-keyring
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
