@@ -1,0 +1,10 @@
+# List of source files containing translatable strings.
+src/collection.vala
+src/item.vala
+src/main.vala
+src/master.vala
+src/prompt.vala
+src/service.vala
+src/session.vala
+src/store.vala
+src/unlock_dialog.vala

@@ -47,14 +47,14 @@ namespace Singularity.Keyring {
 
             var entry1 = new PasswordEntry ();
             entry1.show_peek_icon = true;
-            entry1.placeholder_text = "Passphrase";
+            entry1.placeholder_text = _("Passphrase");
             entry1.activates_default = true;
             root.append (entry1);
 
             PasswordEntry? entry2 = null;
             if (mode == Mode.CREATE) {
                 entry2 = new PasswordEntry ();
-                entry2.placeholder_text = "Confirm passphrase";
+                entry2.placeholder_text = _("Confirm passphrase");
                 entry2.activates_default = true;
                 root.append (entry2);
             }
@@ -67,7 +67,7 @@ namespace Singularity.Keyring {
 
             var btnbox = new Box (Orientation.HORIZONTAL, 8);
             btnbox.halign = Align.END;
-            var cancel_btn = new Button.with_label ("Cancel");
+            var cancel_btn = new Button.with_label (_("Cancel"));
             var ok_btn     = new Button.with_label ((mode == Mode.CREATE) ? "Create" : "Unlock");
             ok_btn.add_css_class ("suggested-action");
             btnbox.append (cancel_btn);
@@ -91,14 +91,14 @@ namespace Singularity.Keyring {
                 if (finished) return;
                 string p1 = entry1.text;
                 if (p1.length == 0) {
-                    err_lbl.label = "Passphrase cannot be empty.";
+                    err_lbl.label = _("Passphrase cannot be empty.");
                     err_lbl.visible = true;
                     return;
                 }
                 if (entry2 != null) {
                     string p2 = entry2.text;
                     if (p1 != p2) {
-                        err_lbl.label = "Passphrases do not match.";
+                        err_lbl.label = _("Passphrases do not match.");
                         err_lbl.visible = true;
                         entry2.text = "";
                         entry2.grab_focus ();
