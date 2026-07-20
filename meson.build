@@ -44,7 +44,17 @@ executable('singularity-keyring',
   install_dir: get_option('bindir'),
 )
 
-install_data(
-  'data/singularity-keyring.service',
-  install_dir: get_option('datadir') / 'singularity' / 'systemd',
+# D-Bus SESSION activation: the Secret Service is per-user and lives on the session
+# bus, so it must NOT be a system service. Activating it via the session dbus-daemon
+# (Exec=) rather than a `systemd --user` unit makes it start on first secrets request
+# under any init (systemd today, sinit later) with no dependency on `systemd --user`.
+service_conf = configuration_data()
+service_conf.set('bindir', get_option('prefix') / get_option('bindir'))
+
+configure_file(
+  input: 'data/org.freedesktop.secrets.service.in',
+  output: 'org.freedesktop.secrets.service',
+  configuration: service_conf,
+  install: true,
+  install_dir: get_option('datadir') / 'dbus-1' / 'services',
 )
