@@ -26,7 +26,7 @@ namespace Singularity.Keyring {
             win.application   = _app;
             win.modal         = true;
             win.resizable     = false;
-            win.deletable     = true;
+            win.deletable     = false;
             win.title         = (mode == Mode.CREATE)
                                 ? "Set keyring passphrase"
                                 : "Unlock keyring";
@@ -86,6 +86,14 @@ namespace Singularity.Keyring {
                 win.close ();
                 cbref (false, "");
             });
+
+            var keys = new EventControllerKey ();
+            keys.key_pressed.connect ((keyval, keycode, state) => {
+                if (keyval != Gdk.Key.Escape) return false;
+                cancel_btn.clicked ();
+                return true;
+            });
+            ((Widget) win).add_controller (keys);
 
             void try_submit () {
                 if (finished) return;

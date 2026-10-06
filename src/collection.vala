@@ -23,6 +23,7 @@ namespace Singularity.Keyring {
         public signal void item_created (GLib.ObjectPath item);
         public signal void item_deleted (GLib.ObjectPath item);
         public signal void item_changed  (GLib.ObjectPath item);
+        internal signal void deleted ();
 
         public SecretCollection (string name,
                                   Store  store,
@@ -37,8 +38,21 @@ namespace Singularity.Keyring {
         }
 
         public string get_name () { return _name; }
-        public string get_path () { return "/org/freedesktop/secrets/collection/" + _name; }
+        public string get_path () { return path_for_name (_name); }
         public bool   is_locked () { return _locked; }
+
+        internal static string path_for_name (string name) {
+            var component = new StringBuilder ();
+            foreach (uint8 b in name.data) {
+                if ((b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') ||
+                    (b >= '0' && b <= '9'))
+                    component.append_c ((char) b);
+                else
+                    component.append_printf ("_%02x", b);
+            }
+            if (component.len == 0) component.append_c ('_');
+            return "/org/freedesktop/secrets/collection/" + component.str;
+        }
 
         internal SecretSession? lookup_session (string path) {
             return _lookup (path);
@@ -61,7 +75,11 @@ namespace Singularity.Keyring {
                 _data = new CollectionData ();
                 _data.label = _name;
                 try { _store.save (_name, _data); }
-                catch (Error e) { warning ("Collection '%s' init failed: %s", _name, e.message); }
+                catch (Error e) {
+                    warning ("Collection '%s' init failed: %s", _name, e.message);
+                    _data = null;
+                    return false;
+                }
             }
             foreach (var idata in _data.items) _register_item (idata);
             _locked = false;
@@ -96,7 +114,6 @@ namespace Singularity.Keyring {
                 _save ();
                 item_changed ((GLib.ObjectPath) item.get_path ());
             });
-            item.delete_requested.connect ((id) => { remove_item (id); });
 
             _items_map[idata.id] = item;
             try {
@@ -113,6 +130,31 @@ namespace Singularity.Keyring {
             catch (Error e) { warning ("Collection '%s': save failed: %s", _name, e.message); }
         }
 
+        internal void save_secret (string id, uint8[] value, string content_type) throws Error {
+            var item = _items_map[id];
+            if (_locked || _data == null || item == null)
+                throw new DBusError.FAILED ("collection is locked or item is missing");
+            var data = item.get_data ();
+            uint8[] previous_value = data.secret_value;
+            string previous_type = data.content_type;
+            uint64 previous_modified = data.modified;
+            uint64 collection_modified = _data.modified;
+            data.secret_value = value;
+            data.content_type = content_type;
+            data.modified = (uint64) (get_real_time () / 1000000);
+            _data.modified = data.modified;
+            try {
+                _store.save (_name, _data);
+            } catch (Error e) {
+                data.secret_value = previous_value;
+                data.content_type = previous_type;
+                data.modified = previous_modified;
+                _data.modified = collection_modified;
+                throw e;
+            }
+            item_changed ((GLib.ObjectPath) item.get_path ());
+        }
+
         private static bool _attributes_match (HashTable<string, string> item_attrs,
                                                 HashTable<string, string> query) {
             bool match = true;
@@ -122,27 +164,33 @@ namespace Singularity.Keyring {
 
         internal void unregister_all () { lock_collection (); }
 
-        internal void remove_item (string id) {
+        internal void remove_item (string id) throws Error {
             var item = _items_map[id];
-            if (item == null || _data == null) return;
-
-            var path = (GLib.ObjectPath) item.get_path ();
-
-            uint reg_id = _item_reg_ids[id];
-            if (reg_id != 0) {
-                _conn.unregister_object (reg_id);
-                _item_reg_ids.remove (id);
-            }
-            _items_map.remove (id);
+            if (_locked || item == null || _data == null)
+                throw new DBusError.FAILED ("collection is locked or item is missing");
 
             ItemData? to_remove = null;
             foreach (var idata in _data.items) {
                 if (idata.id == id) { to_remove = idata; break; }
             }
-            if (to_remove != null) _data.items.remove (to_remove);
+            if (to_remove == null)
+                throw new DBusError.FAILED ("Item is missing from collection");
+            int position = _data.items.index (to_remove);
+            uint64 previous_modified = _data.modified;
+            _data.items.remove (to_remove);
             _data.modified = (uint64) (get_real_time () / 1000000);
-            _save ();
-            item_deleted (path);
+            try {
+                _store.save (_name, _data);
+            } catch (Error e) {
+                _data.items.insert (to_remove, position);
+                _data.modified = previous_modified;
+                throw e;
+            }
+            uint reg_id = _item_reg_ids[id];
+            if (reg_id != 0) _conn.unregister_object (reg_id);
+            _item_reg_ids.remove (id);
+            _items_map.remove (id);
+            item_deleted ((GLib.ObjectPath) item.get_path ());
         }
 
         public GLib.ObjectPath[] items {
@@ -224,11 +272,7 @@ namespace Singularity.Keyring {
                 });
                 if (found != null) {
                     found.replace_secret (plain, secret.content_type);
-                    found.get_data ().modified = (uint64) (get_real_time () / 1000000);
-                    _data.modified             = (uint64) (get_real_time () / 1000000);
-                    _save ();
                     item_path = (GLib.ObjectPath) found.get_path ();
-                    item_changed (item_path);
                     return;
                 }
             }
@@ -242,19 +286,26 @@ namespace Singularity.Keyring {
             idata.secret_value = plain;
             idata.content_type = secret.content_type;
 
+            uint64 previous_modified = _data.modified;
             _data.items.append (idata);
             _data.modified = (uint64) (get_real_time () / 1000000);
-
+            try {
+                _store.save (_name, _data);
+            } catch (Error e) {
+                _data.items.remove (idata);
+                _data.modified = previous_modified;
+                throw e;
+            }
             _register_item (idata);
-            _save ();
 
             item_path = (GLib.ObjectPath) _items_map[new_id].get_path ();
             item_created (item_path);
         }
 
         public GLib.ObjectPath delete () throws GLib.Error {
-            unregister_all ();
             _store.delete_collection (_name);
+            unregister_all ();
+            deleted ();
             return (GLib.ObjectPath) "/";
         }
     }

@@ -74,9 +74,8 @@ namespace Singularity.Keyring {
 
             try {
                 var bytes = new ByteArray ();
-                bytes.append (MAGIC.data);
-                uint8[] vbuf = { VERSION };
-                bytes.append (vbuf);
+                uint8[] header = { 'S', 'K', '1', 0, VERSION };
+                bytes.append (header);
                 bytes.append (salt);
                 uint8[] blob_arr = new uint8[blob_len];
                 Memory.copy (blob_arr, blob, blob_len);
@@ -113,19 +112,21 @@ namespace Singularity.Keyring {
                 warning ("MasterKey.try_unlock: read failed: %s", e.message);
                 return false;
             }
-            if (file_bytes.length < 4 + 1 + 16 + 1) return false;
+            if (file_bytes.length < 4) return false;
             if (file_bytes[0] != 'S' || file_bytes[1] != 'K' ||
-                file_bytes[2] != '1' || file_bytes[3] != '\0')
+                file_bytes[2] != '1')
                 return false;
-            if (file_bytes[4] != VERSION) return false;
+            int header_len = file_bytes[3] == 0 ? 5 : 4;
+            if (file_bytes.length < header_len + 16 + 1 || file_bytes[header_len - 1] != VERSION)
+                return false;
 
-            for (int i = 0; i < 16; i++) salt[i] = file_bytes[5 + i];
+            for (int i = 0; i < 16; i++) salt[i] = file_bytes[header_len + i];
 
             uint8[] derived = new uint8[32];
             if (sk_crypto_argon2id (passphrase, passphrase.length, salt, derived) != 0)
                 return false;
 
-            int blob_off = 5 + 16;
+            int blob_off = header_len + 16;
             int blob_len = file_bytes.length - blob_off;
             uint8[] blob = new uint8[blob_len];
             for (int i = 0; i < blob_len; i++) blob[i] = file_bytes[blob_off + i];

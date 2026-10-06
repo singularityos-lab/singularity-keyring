@@ -91,30 +91,31 @@ namespace Singularity.Keyring {
 
         /**
          * Decrypt and parse a collection. Requires the master key to be
-         * unlocked. Returns null if missing or undecryptable.
+         * unlocked. Returns null only if missing; invalid data raises an error.
          */
         public CollectionData? load (string name) throws Error {
-            if (!_master.unlocked) return null;
+            if (!_master.unlocked) throw new IOError.PERMISSION_DENIED ("keyring is locked");
             var path = collection_file (name);
             if (!FileUtils.test (path, FileTest.EXISTS)) return null;
 
             uint8[] raw;
             var file = GLib.File.new_for_path (path);
             file.load_contents (null, out raw, null);
-            if (raw.length < 5) return null;
-            if (raw[0] != 'S' || raw[1] != 'K' || raw[2] != 'C' || raw[3] != '\0')
-                return null;
-            if (raw[4] != VERSION) return null;
+            if (raw.length < 4 || raw[0] != 'S' || raw[1] != 'K' || raw[2] != 'C')
+                throw new IOError.INVALID_DATA ("Invalid keyring header");
+            // Older writers omitted the NUL byte from the magic string.
+            int header_len = raw[3] == 0 ? 5 : 4;
+            if (raw.length < header_len || raw[header_len - 1] != VERSION)
+                throw new IOError.INVALID_DATA ("Unsupported keyring version");
 
-            int blob_len = raw.length - 5;
+            int blob_len = raw.length - header_len;
             uint8[] blob = new uint8[blob_len];
-            for (int i = 0; i < blob_len; i++) blob[i] = raw[5 + i];
+            for (int i = 0; i < blob_len; i++) blob[i] = raw[header_len + i];
 
             uint8 *pt = null;
             size_t pt_len = 0;
             if (sk_crypto_secretstream_open (_master.key, blob, blob_len, out pt, out pt_len) != 0) {
-                warning ("Store.load: decrypt failed for '%s'", name);
-                return null;
+                throw new IOError.INVALID_DATA ("Keyring authentication failed");
             }
 
             uint8[] json_bytes = new uint8[pt_len + 1];
@@ -123,7 +124,9 @@ namespace Singularity.Keyring {
             sk_crypto_free (pt);
             string json_str = (string) json_bytes;
 
-            return parse_json (json_str);
+            var data = parse_json (json_str);
+            if (data == null) throw new IOError.INVALID_DATA ("Invalid keyring contents");
+            return data;
         }
 
         public void save (string name, CollectionData data) throws Error {
@@ -141,9 +144,8 @@ namespace Singularity.Keyring {
             }
 
             var bytes = new ByteArray ();
-            bytes.append (MAGIC.data);
-            uint8[] vbuf = { VERSION };
-            bytes.append (vbuf);
+            uint8[] header = { 'S', 'K', 'C', 0, VERSION };
+            bytes.append (header);
             uint8[] blob_arr = new uint8[blob_len];
             Memory.copy (blob_arr, blob, blob_len);
             bytes.append (blob_arr);
@@ -155,12 +157,8 @@ namespace Singularity.Keyring {
             fos.close ();
         }
 
-        public void delete_collection (string name) {
-            try {
-                GLib.File.new_for_path (collection_file (name)).delete ();
-            } catch (Error e) {
-                warning ("Store: could not delete '%s': %s", name, e.message);
-            }
+        public void delete_collection (string name) throws Error {
+            GLib.File.new_for_path (collection_file (name)).delete ();
         }
 
         // JSON serialise / parse stay shaped like before.

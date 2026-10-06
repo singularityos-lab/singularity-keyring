@@ -58,7 +58,7 @@ namespace Singularity.Keyring {
             _aliases["default"] = "/org/freedesktop/secrets/collection/login";
         }
 
-        private SecretCollection _register_collection_locked (string name) {
+        private SecretCollection _register_collection_locked (string name) throws Error {
             var coll = new SecretCollection (name, _store, _conn,
                 (path) => _sessions[_path_to_session_id (path)]);
 
@@ -68,13 +68,22 @@ namespace Singularity.Keyring {
                 collection_changed ((GLib.ObjectPath) coll.get_path ()));
             coll.item_changed.connect ((p) =>
                 collection_changed ((GLib.ObjectPath) coll.get_path ()));
+            string path = coll.get_path ();
+            coll.deleted.connect (() => {
+                _conn.unregister_object (_collection_reg_ids[name]);
+                _collection_reg_ids.remove (name);
+                _collections.remove (name);
+                string[] aliases = {};
+                _aliases.foreach ((alias, target) => {
+                    if (target == path) aliases += alias;
+                });
+                foreach (var alias in aliases) _aliases.remove (alias);
+                collection_deleted ((GLib.ObjectPath) path);
+            });
 
+            uint reg_id = _conn.register_object (coll.get_path (), coll);
             _collections[name] = coll;
-            try {
-                _collection_reg_ids[name] = _conn.register_object (coll.get_path (), coll);
-            } catch (Error e) {
-                warning ("Service: register collection '%s': %s", name, e.message);
-            }
+            _collection_reg_ids[name] = reg_id;
             return coll;
         }
 
@@ -193,17 +202,20 @@ namespace Singularity.Keyring {
             if (name.length == 0) name = "keyring";
             var base_name = name;
             int suffix    = 1;
-            while (_collections[name] != null) name = "%s-%d".printf (base_name, suffix++);
+            while (name == "master" || _collections[name] != null || _store.exists (name))
+                name = "%s-%d".printf (base_name, suffix++);
 
             // Make sure the master key is unlocked before we can persist.
             if (!_store.master.unlocked) {
                 throw new GLib.DBusError.FAILED ("keyring is locked; call Unlock() first");
             }
 
+            var data = new CollectionData ();
+            data.label = new_label;
+            _store.save (name, data);
             var coll = _register_collection_locked (name);
             if (!coll.unlock_collection ())
                 throw new GLib.DBusError.FAILED ("Could not initialise collection");
-            coll.label = new_label;
 
             if (alias.length > 0) _aliases[alias] = coll.get_path ();
             collection_path = (GLib.ObjectPath) coll.get_path ();

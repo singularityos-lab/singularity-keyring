@@ -21,7 +21,6 @@ namespace Singularity.Keyring {
         private weak SecretCollection? _owner = null;
 
         internal signal void needs_save ();
-        internal signal void delete_requested (string item_id);
 
         public SecretItem (string collection_name, string id, ItemData data) {
             _collection_name = collection_name;
@@ -33,8 +32,7 @@ namespace Singularity.Keyring {
 
         public string get_id   () { return _id; }
         public string get_path () {
-            return "/org/freedesktop/secrets/collection/%s/%s"
-                    .printf (_collection_name, _id);
+            return SecretCollection.path_for_name (_collection_name) + "/" + _id;
         }
 
         public bool locked { get { return false; } }
@@ -75,7 +73,9 @@ namespace Singularity.Keyring {
         public uint64 modified { get { return _data.modified; } }
 
         public GLib.ObjectPath delete () throws GLib.Error {
-            delete_requested (_id);
+            if (_owner == null)
+                throw new DBusError.FAILED ("Item has no owner collection");
+            _owner.remove_item (_id);
             return (GLib.ObjectPath) "/";
         }
 
@@ -108,18 +108,15 @@ namespace Singularity.Keyring {
                 throw new GLib.DBusError.NO_REPLY ("Unknown session");
 
             uint8[] plain = session.unwrap (secret.parameters, secret.value);
-            _data.secret_value = plain;
-            _data.content_type = secret.content_type;
-            _data.modified     = (uint64) (get_real_time () / 1000000);
-            needs_save ();
+            replace_secret (plain, secret.content_type);
         }
 
         internal unowned ItemData get_data () { return _data; }
 
-        internal void replace_secret (uint8[] value, string content_type) {
-            _data.secret_value = value;
-            _data.content_type = content_type;
-            _data.modified     = (uint64) (get_real_time () / 1000000);
+        internal void replace_secret (uint8[] value, string content_type) throws Error {
+            if (_owner == null)
+                throw new DBusError.FAILED ("Item has no owner collection");
+            _owner.save_secret (_id, value, content_type);
         }
     }
 }
