@@ -1,4 +1,4 @@
-// unlock_dialog.vala - tiny GTK4 passphrase dialog.
+// unlock_dialog.vala - keyring passphrase dialog.
 //
 // Two modes:
 //   CREATE  - first-time setup, two entries (passphrase + confirm).
@@ -10,127 +10,169 @@ using Gtk;
 namespace Singularity.Keyring {
 
     public delegate void UnlockResult (bool accepted, string passphrase);
+    public delegate bool UnlockVerify (string passphrase);
 
     public class UnlockDialog : Object {
 
         public enum Mode { CREATE, UNLOCK }
 
+        private class Waiter {
+            public UnlockResult cb;
+            public Waiter (owned UnlockResult cb) { this.cb = (owned) cb; }
+        }
+
         private Gtk.Application _app;
+        private Singularity.Widgets.AppDialog? _win = null;
+        private GLib.List<Waiter> _waiters = new GLib.List<Waiter> ();
+        private UnlockVerify? _verify = null;
 
         public UnlockDialog (Gtk.Application app) {
             _app = app;
         }
 
+        public void set_verify (owned UnlockVerify verify) {
+            _verify = (owned) verify;
+        }
+
         public void run (Mode mode, owned UnlockResult cb) {
-            var win = new Gtk.Window ();
-            win.application   = _app;
-            win.modal         = true;
-            win.resizable     = false;
-            win.deletable     = false;
-            win.title         = (mode == Mode.CREATE)
-                                ? "Set keyring passphrase"
-                                : "Unlock keyring";
-            win.default_width = 380;
-
-            var root = new Box (Orientation.VERTICAL, 12);
-            root.margin_top    = 18;
-            root.margin_bottom = 18;
-            root.margin_start  = 22;
-            root.margin_end    = 22;
-
-            var title = new Label ((mode == Mode.CREATE)
-                ? "Choose a passphrase for your keyring."
-                : "An application is trying to read a secret. Enter your passphrase.");
-            title.wrap   = true;
-            title.xalign = 0;
-            root.append (title);
-
-            var entry1 = new PasswordEntry ();
-            entry1.show_peek_icon = true;
-            entry1.placeholder_text = _("Passphrase");
-            entry1.activates_default = true;
-            root.append (entry1);
-
-            PasswordEntry? entry2 = null;
-            if (mode == Mode.CREATE) {
-                entry2 = new PasswordEntry ();
-                entry2.placeholder_text = _("Confirm passphrase");
-                entry2.activates_default = true;
-                root.append (entry2);
+            _waiters.append (new Waiter ((owned) cb));
+            if (_win != null) {
+                _win.present ();
+                return;
             }
+
+            var win = new Singularity.Widgets.AppDialog (_app, true, false);
+            _win = win;
+            win.resizable = false;
+            win.set_title (mode == Mode.CREATE ? _("Create Keyring") : _("Unlock Keyring"));
+            win.set_default_size (420, -1);
+
+            var header = new Box (Orientation.VERTICAL, 8);
+            header.margin_top = 12;
+            header.margin_start = 24;
+            header.margin_end = 24;
+
+            var icon = new Image.from_icon_name ("dialog-password");
+            icon.pixel_size = 64;
+            header.append (icon);
+
+            var heading = new Label (mode == Mode.CREATE
+                ? _("Protect your saved passwords")
+                : _("An app wants to use your saved passwords"));
+            heading.add_css_class ("title-3");
+            heading.wrap = true;
+            heading.justify = Justification.CENTER;
+            header.append (heading);
+
+            var body = new Label (mode == Mode.CREATE
+                ? _("Apps keep passwords and keys in your keyring. Choose a passphrase to encrypt it; you will need it to unlock the keyring later.")
+                : _("Enter your keyring passphrase to unlock it."));
+            body.add_css_class ("dim-label");
+            body.wrap = true;
+            body.justify = Justification.CENTER;
+            body.max_width_chars = 44;
+            header.append (body);
+            win.content_box.append (header);
+
+            var group = new Singularity.Widgets.PreferencesGroup ();
+            group.margin_start = 12;
+            group.margin_end = 12;
+            group.margin_top = 12;
+
+            var pass_row = new Singularity.Widgets.PasswordRow (_("Passphrase"));
+            group.add_row (pass_row);
+
+            Singularity.Widgets.PasswordRow? confirm_row = null;
+            if (mode == Mode.CREATE) {
+                confirm_row = new Singularity.Widgets.PasswordRow (_("Confirm Passphrase"));
+                group.add_row (confirm_row);
+            }
+            win.content_box.append (group);
 
             var err_lbl = new Label ("");
             err_lbl.add_css_class ("error");
-            err_lbl.xalign = 0;
+            err_lbl.margin_start = 24;
+            err_lbl.margin_end = 24;
+            err_lbl.margin_top = 8;
+            err_lbl.wrap = true;
             err_lbl.visible = false;
-            root.append (err_lbl);
+            win.content_box.append (err_lbl);
 
-            var btnbox = new Box (Orientation.HORIZONTAL, 8);
-            btnbox.halign = Align.END;
+            var footer = new Box (Orientation.HORIZONTAL, 12);
+            footer.margin_start = 24;
+            footer.margin_end = 24;
+            footer.margin_top = 12;
+            footer.margin_bottom = 24;
+            footer.halign = Align.END;
+
             var cancel_btn = new Button.with_label (_("Cancel"));
-            var ok_btn     = new Button.with_label ((mode == Mode.CREATE) ? "Create" : "Unlock");
-            ok_btn.add_css_class ("suggested-action");
-            btnbox.append (cancel_btn);
-            btnbox.append (ok_btn);
-            root.append (btnbox);
+            cancel_btn.add_css_class ("flat");
+            win.set_cancel_button (cancel_btn);
 
-            win.set_child (root);
+            var ok_btn = new Button.with_label (mode == Mode.CREATE ? _("Create") : _("Unlock"));
+            ok_btn.add_css_class ("suggested-action");
+
+            footer.append (cancel_btn);
+            footer.append (ok_btn);
+            win.content_box.append (footer);
             win.set_default_widget (ok_btn);
 
-            bool finished = false;
-            UnlockResult cbref = (owned) cb;
-
             cancel_btn.clicked.connect (() => {
-                if (finished) return;
-                finished = true;
-                win.close ();
-                cbref (false, "");
+                finish (false, "");
             });
 
-            var keys = new EventControllerKey ();
-            keys.key_pressed.connect ((keyval, keycode, state) => {
-                if (keyval != Gdk.Key.Escape) return false;
-                cancel_btn.clicked ();
-                return true;
-            });
-            ((Widget) win).add_controller (keys);
-
-            void try_submit () {
-                if (finished) return;
-                string p1 = entry1.text;
+            ok_btn.clicked.connect (() => {
+                string p1 = pass_row.text;
                 if (p1.length == 0) {
                     err_lbl.label = _("Passphrase cannot be empty.");
                     err_lbl.visible = true;
+                    pass_row.grab_focus ();
                     return;
                 }
-                if (entry2 != null) {
-                    string p2 = entry2.text;
-                    if (p1 != p2) {
-                        err_lbl.label = _("Passphrases do not match.");
-                        err_lbl.visible = true;
-                        entry2.text = "";
-                        entry2.grab_focus ();
-                        return;
-                    }
+                if (confirm_row != null && p1 != confirm_row.text) {
+                    err_lbl.label = _("Passphrases do not match.");
+                    err_lbl.visible = true;
+                    confirm_row.text = "";
+                    confirm_row.grab_focus ();
+                    return;
                 }
-                finished = true;
-                win.close ();
-                cbref (true, p1);
+                if (mode == Mode.UNLOCK && _verify != null && !_verify (p1)) {
+                    err_lbl.label = _("Wrong passphrase. Try again.");
+                    err_lbl.visible = true;
+                    pass_row.text = "";
+                    pass_row.grab_focus ();
+                    return;
+                }
+                finish (true, p1);
+            });
+            pass_row.entry_activated.connect (() => {
+                if (confirm_row != null && confirm_row.text.length == 0) {
+                    confirm_row.grab_focus ();
+                    return;
+                }
+                ok_btn.clicked ();
+            });
+            if (confirm_row != null) {
+                confirm_row.entry_activated.connect (() => ok_btn.clicked ());
             }
-            ok_btn.clicked.connect (try_submit);
-            entry1.activate.connect (try_submit);
-            if (entry2 != null) entry2.activate.connect (try_submit);
 
             win.close_request.connect (() => {
-                if (!finished) {
-                    finished = true;
-                    cbref (false, "");
-                }
+                finish (false, "");
                 return false;
             });
 
             win.present ();
-            entry1.grab_focus ();
+            pass_row.grab_focus ();
+        }
+
+        private void finish (bool accepted, string passphrase) {
+            var win = _win;
+            if (win == null) return;
+            _win = null;
+            var waiters = (owned) _waiters;
+            _waiters = new GLib.List<Waiter> ();
+            win.destroy ();
+            foreach (var w in waiters) w.cb (accepted, passphrase);
         }
     }
 }

@@ -12,6 +12,15 @@ gio_dep      = dependency('gio-2.0')
 json_dep     = dependency('json-glib-1.0')
 gtk_dep      = dependency('gtk4')
 
+libsingularity_dep = dependency('singularity-1.0',
+  fallback: ['libsingularity', 'libsingularity_dep']
+)
+
+if not meson.is_subproject() and libsingularity_dep.type_name() == 'internal'
+  libsingularity_vapi_dir = join_paths(meson.project_build_root(), 'subprojects', 'libsingularity')
+  add_project_arguments(['--vapidir=' + libsingularity_vapi_dir], language: 'vala')
+endif
+
 # libgcrypt + libsodium are pure C deps. Wrap them via find_library so
 # valac does not try to load a Vala .vapi for them (which doesn't exist).
 cc = meson.get_compiler('c')
@@ -36,7 +45,7 @@ sources = files(
 
 executable('singularity-keyring',
   sources,
-  dependencies: [glib_dep, gio_dep, json_dep, gtk_dep, gcrypt_dep, sodium_dep],
+  dependencies: [glib_dep, gio_dep, json_dep, gtk_dep, libsingularity_dep, gcrypt_dep, sodium_dep],
   include_directories: include_directories('src'),
   vala_args: ['--pkg=gio-unix-2.0'],
   c_args: ['-DG_LOG_DOMAIN="sk-keyring"'],

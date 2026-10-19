@@ -17,6 +17,7 @@ namespace Singularity.Keyring {
         private HashTable<string, SecretSession>    _sessions;
         private HashTable<string, uint>             _session_reg_ids;
         private HashTable<string, string>           _aliases;
+        private HashTable<string, uint>             _alias_reg_ids;
 
         // Tracks active prompt object so we don't unregister too early.
         private HashTable<string, SecretPrompt>     _prompts;
@@ -34,11 +35,13 @@ namespace Singularity.Keyring {
             _gtk_app            = gtk_app;
             _store              = new Store ();
             _dialog             = new UnlockDialog (gtk_app);
+            _dialog.set_verify ((passphrase) => _store.master.try_unlock (passphrase));
             _collections        = new HashTable<string, SecretCollection> (str_hash, str_equal);
             _collection_reg_ids = new HashTable<string, uint>             (str_hash, str_equal);
             _sessions           = new HashTable<string, SecretSession>    (str_hash, str_equal);
             _session_reg_ids    = new HashTable<string, uint>             (str_hash, str_equal);
             _aliases            = new HashTable<string, string>           (str_hash, str_equal);
+            _alias_reg_ids      = new HashTable<string, uint>             (str_hash, str_equal);
             _prompts            = new HashTable<string, SecretPrompt>     (str_hash, str_equal);
             _prompt_reg_ids     = new HashTable<string, uint>             (str_hash, str_equal);
         }
@@ -56,6 +59,39 @@ namespace Singularity.Keyring {
                 _register_collection_locked ("login");
             }
             _aliases["default"] = "/org/freedesktop/secrets/collection/login";
+            _export_alias ("default");
+        }
+
+        private const string ALIAS_PREFIX = "/org/freedesktop/secrets/aliases/";
+
+        private void _export_alias (string name) {
+            uint old_id = _alias_reg_ids[name];
+            if (old_id != 0) {
+                _conn.unregister_object (old_id);
+                _alias_reg_ids.remove (name);
+            }
+            var target = _aliases[name];
+            if (target == null) return;
+            SecretCollection? found = null;
+            _collections.foreach ((cname, coll) => {
+                if (coll.get_path () == target) found = coll;
+            });
+            if (found == null) return;
+            try {
+                _alias_reg_ids[name] = _conn.register_object (ALIAS_PREFIX + name, found);
+            } catch (Error e) {
+                warning ("alias '%s' export failed: %s", name, e.message);
+            }
+        }
+
+        private string _resolve (string path) {
+            if (!path.has_prefix (ALIAS_PREFIX)) return path;
+            string rest = path[ALIAS_PREFIX.length :];
+            int slash = rest.index_of ("/");
+            string name = slash >= 0 ? rest[0 : slash] : rest;
+            string tail = slash >= 0 ? rest[slash :] : "";
+            var target = _aliases[name];
+            return target != null ? target + tail : path;
         }
 
         private SecretCollection _register_collection_locked (string name) throws Error {
@@ -77,7 +113,10 @@ namespace Singularity.Keyring {
                 _aliases.foreach ((alias, target) => {
                     if (target == path) aliases += alias;
                 });
-                foreach (var alias in aliases) _aliases.remove (alias);
+                foreach (var alias in aliases) {
+                    _aliases.remove (alias);
+                    _export_alias (alias);
+                }
                 collection_deleted ((GLib.ObjectPath) path);
             });
 
@@ -217,14 +256,30 @@ namespace Singularity.Keyring {
             if (!coll.unlock_collection ())
                 throw new GLib.DBusError.FAILED ("Could not initialise collection");
 
-            if (alias.length > 0) _aliases[alias] = coll.get_path ();
+            if (alias.length > 0) {
+                _aliases[alias] = coll.get_path ();
+                _export_alias (alias);
+            }
             collection_path = (GLib.ObjectPath) coll.get_path ();
             collection_created (collection_path);
         }
 
-        public void search_items (HashTable<string, string> attributes,
-                                   out GLib.ObjectPath[] unlocked,
-                                   out GLib.ObjectPath[] locked) throws GLib.Error {
+        public async void search_items (HashTable<string, string> attributes,
+                                         out GLib.ObjectPath[] unlocked,
+                                         out GLib.ObjectPath[] locked) throws GLib.Error {
+            if (!_store.master.unlocked && _store.master.exists_on_disk ()) {
+                _dialog.run (UnlockDialog.Mode.UNLOCK, (accepted, passphrase) => {
+                    if (accepted && !_store.master.unlocked)
+                        _store.master.try_unlock (passphrase);
+                    if (_store.master.unlocked) {
+                        _collections.foreach ((name, coll) => {
+                            if (coll.is_locked ()) coll.unlock_collection ();
+                        });
+                    }
+                    Idle.add (search_items.callback);
+                });
+                yield;
+            }
             GLib.ObjectPath[] u = {};
             GLib.ObjectPath[] l = {};
             _collections.foreach ((name, coll) => {
@@ -252,7 +307,7 @@ namespace Singularity.Keyring {
             _collections.foreach ((name, coll) => {
                 bool referenced = false;
                 foreach (var p in objects) {
-                    string ps = (string) p;
+                    string ps = _resolve ((string) p);
                     if (ps == coll.get_path () || ps.has_prefix (coll.get_path () + "/")) {
                         referenced = true;
                         break;
@@ -264,7 +319,7 @@ namespace Singularity.Keyring {
             // Already unlocked subset.
             GLib.ObjectPath[] already = {};
             foreach (var p in objects) {
-                string ps = (string) p;
+                string ps = _resolve ((string) p);
                 bool covered = false;
                 _collections.foreach ((name, coll) => {
                     if (coll.is_locked ()) return;
@@ -280,15 +335,18 @@ namespace Singularity.Keyring {
                 for (uint i = 0; i < locked_colls.length; i++) {
                     locked_colls[i].unlock_collection ();
                 }
+                GLib.ObjectPath[] now = {};
                 foreach (var p in objects) {
-                    string ps = (string) p;
+                    string ps = _resolve ((string) p);
+                    bool covered = false;
                     _collections.foreach ((name, coll) => {
                         if (coll.is_locked ()) return;
                         if (ps == coll.get_path () || ps.has_prefix (coll.get_path () + "/"))
-                            already += p;
+                            covered = true;
                     });
+                    if (covered) now += p;
                 }
-                unlocked = already;
+                unlocked = now;
                 return;
             }
 
@@ -311,7 +369,9 @@ namespace Singularity.Keyring {
                 (passphrase, out dismissed, out result) => {
                     dismissed = false;
                     bool ok = false;
-                    if (mode == UnlockDialog.Mode.CREATE) {
+                    if (_store.master.unlocked) {
+                        ok = true;
+                    } else if (mode == UnlockDialog.Mode.CREATE) {
                         ok = _store.master.create (passphrase);
                     } else {
                         ok = _store.master.try_unlock (passphrase);
@@ -326,7 +386,7 @@ namespace Singularity.Keyring {
                         if (coll.is_locked ()) coll.unlock_collection ();
                     });
                     foreach (var op in captured) {
-                        string ops = (string) op;
+                        string ops = _resolve ((string) op);
                         _collections.foreach ((name, coll) => {
                             if (coll.is_locked ()) return;
                             if (ops == coll.get_path () || ops.has_prefix (coll.get_path () + "/"))
@@ -364,7 +424,7 @@ namespace Singularity.Keyring {
             _collections.foreach ((name, coll) => {
                 bool referenced = (objects.length == 0);
                 foreach (var p in objects) {
-                    string ps = (string) p;
+                    string ps = _resolve ((string) p);
                     if (ps == coll.get_path () || ps.has_prefix (coll.get_path () + "/")) {
                         referenced = true;
                         break;
@@ -396,7 +456,7 @@ namespace Singularity.Keyring {
                 _collections.foreach ((name, coll) => {
                     if (coll.is_locked ()) return;
                     string prefix = coll.get_path () + "/";
-                    string path_s = (string) item_path;
+                    string path_s = _resolve ((string) item_path);
                     if (!path_s.has_prefix (prefix)) return;
                     string id   = path_s[prefix.length :];
                     var    item = coll.get_item_by_id (id);
@@ -414,7 +474,7 @@ namespace Singularity.Keyring {
 
         public void set_alias (string name, GLib.ObjectPath collection_path) throws GLib.Error {
             string cp = (string) collection_path;
-            if (cp == "/") { _aliases.remove (name); return; }
+            if (cp == "/") { _aliases.remove (name); _export_alias (name); return; }
             bool found = false;
             _collections.foreach ((cname, coll) => {
                 if (coll.get_path () == cp) found = true;
@@ -422,6 +482,7 @@ namespace Singularity.Keyring {
             if (!found)
                 throw new GLib.DBusError.FAILED ("No collection at path '%s'".printf (cp));
             _aliases[name] = cp;
+            _export_alias (name);
         }
     }
 }

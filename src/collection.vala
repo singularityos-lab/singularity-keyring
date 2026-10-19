@@ -6,6 +6,16 @@ namespace Singularity.Keyring {
 
     public delegate SecretSession? SessionLookup (string path);
 
+    [DBus (name = "org.freedesktop.Secret.Error")]
+    public errordomain SecretError {
+        [DBus (name = "IsLocked")]
+        IS_LOCKED,
+        [DBus (name = "NoSession")]
+        NO_SESSION,
+        [DBus (name = "NoSuchObject")]
+        NO_SUCH_OBJECT
+    }
+
     [DBus (name = "org.freedesktop.Secret.Collection")]
     public class SecretCollection : Object {
 
@@ -235,7 +245,7 @@ namespace Singularity.Keyring {
                                   out GLib.ObjectPath prompt) throws GLib.Error {
             prompt = (GLib.ObjectPath) "/";
             if (_locked || _data == null)
-                throw new GLib.DBusError.FAILED ("collection is locked");
+                throw new SecretError.IS_LOCKED ("collection is locked");
 
             string new_label = "";
             string new_type  = "org.freedesktop.Secret.Generic";
