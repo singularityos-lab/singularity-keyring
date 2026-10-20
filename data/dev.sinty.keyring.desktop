@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Keyring
+Exec=singularity-keyring
+Icon=dialog-password
+NoDisplay=true
+X-Singularity-NoDock=true

@@ -67,3 +67,7 @@ configure_file(
   install: true,
   install_dir: get_option('datadir') / 'dbus-1' / 'services',
 )
+
+install_data('data/dev.sinty.keyring.desktop',
+  install_dir: get_option('datadir') / 'applications',
+)
