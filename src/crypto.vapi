@@ -37,3 +37,6 @@ public extern void sk_crypto_random ([CCode (array_length = false)] uint8[] buf,
 
 [CCode (cheader_filename = "crypto.h", cname = "sk_crypto_free")]
 public extern void sk_crypto_free (void *p);
+
+[CCode (cheader_filename = "crypto.h", cname = "sk_path_encrypted")]
+public extern int sk_path_encrypted (string path);

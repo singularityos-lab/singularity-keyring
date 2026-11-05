@@ -11,6 +11,11 @@
 #include <string.h>
 #include <gcrypt.h>
 #include <sodium.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#include <linux/fscrypt.h>
 
 #define MODP_2048_HEX                                                          \
     "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74"        \
@@ -321,4 +326,18 @@ void
 sk_crypto_free (void *p)
 {
     free (p);
+}
+
+int
+sk_path_encrypted (const char *path)
+{
+    int fd = open (path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0)
+        return 0;
+    struct fscrypt_get_policy_ex_arg arg;
+    memset (&arg, 0, sizeof arg);
+    arg.policy_size = sizeof arg.policy;
+    int rc = ioctl (fd, FS_IOC_GET_ENCRYPTION_POLICY_EX, &arg);
+    close (fd);
+    return rc == 0;
 }

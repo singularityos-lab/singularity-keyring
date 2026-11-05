@@ -57,6 +57,8 @@ void sk_crypto_random              (unsigned char *buf, size_t len);
 
 void sk_crypto_free                (void *p);
 
+int  sk_path_encrypted             (const char *path);
+
 #ifdef __cplusplus
 }
 #endif

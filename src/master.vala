@@ -32,9 +32,11 @@ namespace Singularity.Keyring {
         public bool    has_file  = false;
 
         private string _path;
+        private string _login_path;
 
         public MasterKey (string base_dir) {
             _path = GLib.Path.build_filename (base_dir, "master.skr");
+            _login_path = GLib.Path.build_filename (base_dir, "login.key");
             has_file = FileUtils.test (_path, FileTest.EXISTS);
         }
 
@@ -94,6 +96,7 @@ namespace Singularity.Keyring {
 
             has_file = true;
             unlocked = true;
+            remember_login ();
             return true;
         }
 
@@ -125,7 +128,15 @@ namespace Singularity.Keyring {
             uint8[] derived = new uint8[32];
             if (sk_crypto_argon2id (passphrase, passphrase.length, salt, derived) != 0)
                 return false;
+            if (!verify (file_bytes, header_len, derived)) return false;
 
+            for (int i = 0; i < 32; i++) key[i] = derived[i];
+            unlocked = true;
+            remember_login ();
+            return true;
+        }
+
+        private bool verify (uint8[] file_bytes, int header_len, uint8[] derived) {
             int blob_off = header_len + 16;
             int blob_len = file_bytes.length - blob_off;
             uint8[] blob = new uint8[blob_len];
@@ -144,11 +155,53 @@ namespace Singularity.Keyring {
                 }
             }
             sk_crypto_free (pt);
-            if (!ok) return false;
+            return ok;
+        }
 
-            for (int i = 0; i < 32; i++) key[i] = derived[i];
+        private bool login_bound () {
+            return sk_path_encrypted (GLib.Path.get_dirname (_path)) != 0;
+        }
+
+        public bool try_login_unlock () {
+            if (!has_file || !login_bound ()) return false;
+            uint8[] stored;
+            uint8[] file_bytes;
+            try {
+                FileUtils.get_data (_login_path, out stored);
+                FileUtils.get_data (_path, out file_bytes);
+            } catch (Error e) {
+                return false;
+            }
+            if (stored.length != 36 || stored[0] != 'S' || stored[1] != 'K' || stored[2] != 'L' || stored[3] != '1')
+                return false;
+            if (file_bytes.length < 5 || file_bytes[0] != 'S' || file_bytes[1] != 'K' || file_bytes[2] != '1')
+                return false;
+            int header_len = file_bytes[3] == 0 ? 5 : 4;
+            if (file_bytes.length < header_len + 16 + 1 || file_bytes[header_len - 1] != VERSION)
+                return false;
+            uint8[] candidate = new uint8[32];
+            for (int i = 0; i < 32; i++) candidate[i] = stored[4 + i];
+            for (int i = 0; i < 32; i++) stored[4 + i] = 0;
+            if (!verify (file_bytes, header_len, candidate)) return false;
+            for (int i = 0; i < 16; i++) salt[i] = file_bytes[header_len + i];
+            for (int i = 0; i < 32; i++) key[i] = candidate[i];
             unlocked = true;
             return true;
+        }
+
+        public void remember_login () {
+            if (!unlocked || !login_bound ()) return;
+            var bytes = new ByteArray ();
+            uint8[] header = { 'S', 'K', 'L', '1' };
+            bytes.append (header);
+            bytes.append (key);
+            try {
+                var fos = GLib.File.new_for_path (_login_path).replace (null, false, GLib.FileCreateFlags.PRIVATE);
+                fos.write_all (bytes.data, null);
+                fos.close ();
+            } catch (Error e) {
+                warning ("MasterKey.remember_login: %s", e.message);
+            }
         }
     }
 }
