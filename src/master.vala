@@ -162,6 +162,15 @@ namespace Singularity.Keyring {
             return sk_path_encrypted (GLib.Path.get_dirname (_path)) != 0;
         }
 
+        public bool create_login_bound () {
+            if (has_file || !login_bound ()) return false;
+            uint8[] raw = new uint8[32];
+            sk_crypto_random (raw, 32);
+            string secret = GLib.Base64.encode (raw);
+            for (int i = 0; i < raw.length; i++) raw[i] = 0;
+            return create (secret);
+        }
+
         public bool try_login_unlock () {
             if (!has_file || !login_bound ()) return false;
             uint8[] stored;

@@ -60,7 +60,7 @@ namespace Singularity.Keyring {
             }
             _aliases["default"] = "/org/freedesktop/secrets/collection/login";
             _export_alias ("default");
-            if (_store.master.try_login_unlock ()) {
+            if (_store.master.create_login_bound () || _store.master.try_login_unlock ()) {
                 _collections.foreach ((name, coll) => {
                     if (coll.is_locked ()) coll.unlock_collection ();
                 });
